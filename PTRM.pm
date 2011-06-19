@@ -330,6 +330,13 @@ GRANT ALL ON SCHEMA public TO PUBLIC;
 
 */
 
+=pod
+Выполняет указанный $code с соблюдением 2PC между указанными коннекциями в $conns. Коннекции нужны не в виде $dbh, а в виде коннекций
+для того, чтобы в случае восстановления можно было бы восстановить соединения к базам, участвовавшим в транзакции.
+$tmname - уникальное имя конкретного процесса менеджера транзакций, $tmdbh - коннект к базе, которая описана выше
+в комментарии.
+
+=cut
 sub transaction{
   my($tmname, $tmdbh, $conns, $code) = @_;
   my @dbhs;
@@ -437,6 +444,13 @@ sub recover{
    $tmdbh2->disconnect;
 }
 
+#получаем временное имя TM
+#это временное имя хорошо тем, что в случае аварийного завершения распределенной транзакции
+#можно будет определить, что транзакция не завершена корректно - в имени присутствует хеш
+#от pid'а бекенда в базе менеджера транзакций и времени старта этого бекенда
+#
+#соответственно, если есть такие незавершенные транзакции, для которых не находится нужной пары pid/дата,
+#то это мертвые транзакции и их необходимо убить
 sub gettemptmname{
   my $dbh = shift;
   my $tmname = $dbh->selectrow_array(q!select 'ptrm.' || md5(procpid::text || backend_start::text)  from pg_stat_activity where procpid=pg_backend_pid()!);
@@ -444,6 +458,7 @@ sub gettemptmname{
   return $tmname;
 }
 
+#Ну и убиваем его
 sub deletetemptmname{
   my $dbh = shift;
   my $tmname = shift;
@@ -455,6 +470,8 @@ sub getdiedtmnames{
   return map { $_->{name} } @{ $dbh->selectall_arrayref(q!select name from tm where name like 'ptrm.%' and not exists(select * from pg_stat_activity where tm.name='ptrm.' || md5(procpid::text || backend_start::text))!, {Columns=>{}}) };
 }
 
+
+#эта функция должна периодически вызываться и вычищать мертвые транзакции. по-хорошему, раз в несколько минут
 sub recoverdied{
   my $tmpdbh = shift;
   recover $tmpdbh, $_ for getdiedtmnames $tmpdbh;
